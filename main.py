@@ -3,15 +3,20 @@ import os
 import sys
 import time
 import math
+import pdb
+
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
+import torch.optim
 
 from fp16 import FP16_Module, FP16_Optimizer
 
 import data
 import model
 from model import DistributedDataParallel as DDP
+import data_utils.preprocess
 
 from apex.reparameterization import apply_weight_norm, remove_weight_norm
 from configure_data import configure_data
@@ -108,6 +113,105 @@ if args.seed is not -1:
 if args.loss_scale != 1 and args.dynamic_loss_scale:
     raise RuntimeError("Static loss scale and dynamic loss scale cannot be used together.")
     
+
+
+###############################################################################
+# Pre-Training code
+###############################################################################
+
+data_pretrain = {'word':[], 'vec':[], 'seq':[]}
+with open('/home/mohammad/Database/NLP/glove.6B/glove.6B.300d.txt', 'r') as f:
+    dfile = f.readlines()
+for line in dfile[:400]:
+    line = line.strip('\n').split(' ', 1)
+    word = line[0]
+    vec = np.fromstring(line[1], sep=' ')
+    seq = data_utils.preprocess.tokenize_str_batch([word])
+    try:
+        seq = seq[0].narrow(1, 2, seq[1]-3)
+    except:
+        continue
+    data_pretrain['word'].append(word)
+    data_pretrain['vec'].append(vec)
+    data_pretrain['seq'].append(seq)
+
+
+def get_batch_pretrain(data, size=128):
+    inds = np.random.choice(len(data['word']), size=size)
+    features = []
+    targets = []
+    for ind in inds:
+        if args.cuda:
+            feature = data['seq'][ind].long().cuda()
+            target = torch.tensor(data['vec'][ind], dtype=torch.float).cuda()
+        else:
+            feature = data['seq'][ind].long()
+            target = torch.tensor(data['vec'][ind], dtype=torch.float)         
+        features.append(feature)
+        targets.append(target)
+    return features, targets
+
+features_pretrn, targets_pretrn = get_batch_pretrain(data_pretrain, size=128)
+
+criterion_pre = nn.MSELoss()
+
+ntokens = args.data_size
+model_pre = model.RNNModelPreTrain(args.model, ntokens, args.emsize, 
+                                   args.nhid, args.nlayers, args.dropout, args.tied, nvec=300)
+if args.cuda:
+    model_pre.cuda()
+    
+# create optimizer and fp16 models
+if args.fp16:
+    model_pre = FP16_Module(model_pre)
+    optim_pre = eval('torch.optim.'+args.optim)(model_pre.parameters(), lr=0.000005)
+    optim_pre = FP16_Optimizer(optim_pre, 
+                           static_loss_scale=args.loss_scale,
+                           dynamic_loss_scale=args.dynamic_loss_scale)
+else:
+    optim_pre = eval('torch.optim.'+args.optim)(model_pre.parameters(), lr=0.000005)
+
+# # add linear learning rate scheduler
+# if train_data is not None:
+#     num_iters = len(train_data) * args.epochs
+#     LR = LinearLR(optim, num_iters)   
+
+# wrap model for distributed training
+if args.world_size > 1:
+    model_pre = DDP(model_pre)
+
+
+for iter_trn in range(1000):
+    # get a train batch
+    features_pretrn, targets_pretrn = get_batch_pretrain(data_pretrain, size=128)
+    total_loss = 0.0
+    for feature_seq, target_vec in zip(features_pretrn, targets_pretrn):
+        # clear model
+        model_pre.zero_grad()
+        model_pre.hidden = model_pre.init_hidden()
+        # do forward path
+        pred_vec = model_pre(feature_seq)[0][-1,-1]
+        loss = criterion_pre(pred_vec, target_vec)
+        # do backward path
+        # loss.backward()
+        # optimize
+        optim_pre.zero_grad()
+        if args.fp16:
+            optim_pre.backward(loss)
+        else:
+            loss.backward(retain_graph=True)
+        total_loss += loss.data.float()
+
+        # clipping gradients helps prevent the exploding gradient problem in RNNs / LSTMs.
+        if args.clip > 0:
+            if not args.fp16:
+                torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
+            else:
+                optim_pre.clip_fp32_grads(clip=args.clip)
+        optim_pre.step()
+    print('Iter {:3d}, loss {:.2E}'.format(iter_trn, total_loss))
+pdb.set_trace()
+
 ###############################################################################
 # Load data
 ###############################################################################
@@ -133,7 +237,6 @@ if args.loss_scale != 1 and args.dynamic_loss_scale:
 # With 1 indicating to reset hidden state at that particular minibatch index
  
 train_data, val_data, test_data = data_config.apply(args)
-
 ###############################################################################
 # Build the model
 ###############################################################################
@@ -179,6 +282,8 @@ if args.world_size > 1:
 
 criterion = nn.CrossEntropyLoss()
 
+
+
 ###############################################################################
 # Training code
 ###############################################################################
@@ -193,6 +298,7 @@ criterion = nn.CrossEntropyLoss()
 # by the data loader. The chunks are along dimension 0, corresponding
 # to the seq_len dimension in the LSTM. A Variable representing an appropriate 
 # shard reset mask of the same dimensions is also returned.
+
 
 def get_batch(data):
     reset_mask_batch = data[1].long()
@@ -231,7 +337,6 @@ def train(total_iters=0):
     hidden = init_hidden(args.batch_size)
     curr_loss = 0.
     for i, batch in enumerate(train_data):
-
         data, targets, reset_mask = get_batch(batch)
         output, hidden = model(data, reset_mask=reset_mask)
         loss = criterion(output.view(-1, ntokens).contiguous().float(), targets.view(-1).contiguous())

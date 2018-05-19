@@ -1,3 +1,5 @@
+import pdb
+
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
@@ -52,6 +54,59 @@ class RNNModel(nn.Module):
         self.encoder.load_state_dict(state_dict['encoder']['encoder'], strict=strict)
         self.rnn.load_state_dict(state_dict['encoder']['rnn'], strict=strict)
 
+class RNNModelPreTrain(nn.Module):
+    """Container module with an encoder, a recurrent module, and a decoder."""
+
+    def __init__(self, rnn_type, ntoken, ninp, nhid, nlayers, dropout=0.5, tie_weights=False, nvec=300):
+        super(RNNModelPreTrain, self).__init__()
+        self.drop = nn.Dropout(dropout)
+        self.encoder = nn.Embedding(ntoken, ninp)
+        #self.decoder = nn.Linear(nhid, ntoken)
+        self.decoder_vec = nn.Linear(nhid, nvec)
+        self.rnn=getattr(RNN, rnn_type)(ninp, nhid, nlayers, dropout=dropout)
+
+        # Optionally tie weights as in:
+        # "Using the Output Embedding to Improve Language Models" (Press & Wolf 2016)
+        # https://arxiv.org/abs/1608.05859
+        # and
+        # "Tying Word Vectors and Word Classifiers: A Loss Framework for Language Modeling" (Inan et al. 2016)
+        # https://arxiv.org/abs/1611.01462
+        if tie_weights:
+            raise ValueError('Not Supported: When using the tied flag, nhid must be equal to emsize')
+
+        self.decoder_vec.bias.data.fill_(0)
+        self.rnn_type = rnn_type
+        self.nhid = nhid
+        self.nlayers = nlayers
+        self.nvec = nvec
+        self.hidden = self.init_hidden()
+        
+    def forward(self, input_seq, reset_mask=None):
+        emb = self.drop(self.encoder(input_seq))
+        #self.rnn.detach_hidden()
+        output, self.hidden = self.rnn(emb, self.hidden)#, reset_mask=reset_mask)
+        output = self.drop(output)
+        decoded = self.decoder_vec(output.view(output.size(0)*output.size(1), output.size(2)))
+        return decoded.view(output.size(0), output.size(1), decoded.size(1)), self.hidden
+
+    def state_dict(self, destination=None, prefix='', keep_vars=False):
+        sd = {}
+        sd['encoder'] = self.encoder.state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
+        sd['rnn'] = self.rnn.state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
+        sd = {'encoder': sd}
+        sd['decoder_vec'] = self.decoder_vec.state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
+        return sd
+
+    def load_state_dict(self, state_dict, strict=True):
+        if 'decoder' in state_dict:
+            self.decoder.load_state_dict(state_dict['decoder'], strict=strict)
+        self.encoder.load_state_dict(state_dict['encoder']['encoder'], strict=strict)
+        self.rnn.load_state_dict(state_dict['encoder']['rnn'], strict=strict)
+
+    def init_hidden(self):
+        self.hidden = (torch.zeros(1, 1, self.nhid), torch.zeros(1, 1, self.nhid))
+        
+        
 class RNNFeaturizer(nn.Module):
     """Container module with an encoder, a recurrent module, and a decoder."""
 
