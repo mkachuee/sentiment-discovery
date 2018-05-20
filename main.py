@@ -122,7 +122,7 @@ if args.loss_scale != 1 and args.dynamic_loss_scale:
 data_pretrain = {'word':[], 'vec':[], 'seq':[]}
 with open('/home/mohammad/Database/NLP/glove.6B/glove.6B.300d.txt', 'r') as f:
     dfile = f.readlines()
-for line in dfile[:400]:
+for line in dfile[:]:
     line = line.strip('\n').split(' ', 1)
     word = line[0]
     vec = np.fromstring(line[1], sep=' ')
@@ -164,12 +164,12 @@ if args.cuda:
 # create optimizer and fp16 models
 if args.fp16:
     model_pre = FP16_Module(model_pre)
-    optim_pre = eval('torch.optim.'+args.optim)(model_pre.parameters(), lr=0.000005)
+    optim_pre = eval('torch.optim.'+args.optim)(model_pre.parameters(), lr=0.0001)
     optim_pre = FP16_Optimizer(optim_pre, 
                            static_loss_scale=args.loss_scale,
                            dynamic_loss_scale=args.dynamic_loss_scale)
 else:
-    optim_pre = eval('torch.optim.'+args.optim)(model_pre.parameters(), lr=0.000005)
+    optim_pre = eval('torch.optim.'+args.optim)(model_pre.parameters(), lr=0.0001)
 
 # # add linear learning rate scheduler
 # if train_data is not None:
@@ -181,34 +181,34 @@ if args.world_size > 1:
     model_pre = DDP(model_pre)
 
 
-for iter_trn in range(1000):
+for iter_trn in range(100):
     # get a train batch
     features_pretrn, targets_pretrn = get_batch_pretrain(data_pretrain, size=128)
     total_loss = 0.0
+    # zero grads
+    model_pre.zero_grad()
+    optim_pre.zero_grad()
     for feature_seq, target_vec in zip(features_pretrn, targets_pretrn):
-        # clear model
-        model_pre.zero_grad()
+        # clear hidden state
         model_pre.hidden = model_pre.init_hidden()
         # do forward path
         pred_vec = model_pre(feature_seq)[0][-1,-1]
         loss = criterion_pre(pred_vec, target_vec)
+        total_loss += loss.data.float()
         # do backward path
         # loss.backward()
         # optimize
-        optim_pre.zero_grad()
         if args.fp16:
             optim_pre.backward(loss)
         else:
             loss.backward(retain_graph=True)
-        total_loss += loss.data.float()
-
-        # clipping gradients helps prevent the exploding gradient problem in RNNs / LSTMs.
-        if args.clip > 0:
-            if not args.fp16:
-                torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
-            else:
-                optim_pre.clip_fp32_grads(clip=args.clip)
-        optim_pre.step()
+    # clipping gradients helps prevent the exploding gradient problem in RNNs / LSTMs.
+    if args.clip > 0:
+        if not args.fp16:
+            torch.nn.utils.clip_grad_norm(model_pre.parameters(), args.clip)
+        else:
+            optim_pre.clip_fp32_grads(clip=args.clip)
+    optim_pre.step()
     print('Iter {:3d}, loss {:.2E}'.format(iter_trn, total_loss))
 pdb.set_trace()
 
@@ -249,14 +249,17 @@ if args.cuda:
 
 rnn_model = model
 
-if args.load != '':
-    sd = torch.load(args.load)
-    try:
-        model.load_state_dict(sd)
-    except:
-        apply_weight_norm(model.rnn, hook_child=False)
-        model.load_state_dict(sd)
-        remove_weight_norm(model.rnn)
+sd = model_pre.state_dict()
+model.load_state_dict(sd)
+
+# if args.load != '':
+#     sd = torch.load(args.load)
+#     try:
+#         model.load_state_dict(sd)
+#     except:
+#         apply_weight_norm(model.rnn, hook_child=False)
+#         model.load_state_dict(sd)
+#         remove_weight_norm(model.rnn)
 
 if not args.no_weight_norm:
     apply_weight_norm(model.rnn, hook_child=False)
