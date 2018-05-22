@@ -23,6 +23,8 @@ from configure_data import configure_data
 from learning_rates import LinearLR
 
 parser = argparse.ArgumentParser(description='PyTorch Sentiment-Discovery Language Modeling')
+parser.add_argument('--exp', type=str, default='original',
+                    help='the experiment to run: (original,pretrain)')
 parser.add_argument('--model', type=str, default='mLSTM',
                     help='type of recurrent net (RNNTanh, RNNReLU, LSTM, mLSTM, GRU)')
 parser.add_argument('--emsize', type=int, default=64,
@@ -114,103 +116,103 @@ if args.loss_scale != 1 and args.dynamic_loss_scale:
     raise RuntimeError("Static loss scale and dynamic loss scale cannot be used together.")
     
 
-
 ###############################################################################
 # Pre-Training code
 ###############################################################################
-
-data_pretrain = {'word':[], 'vec':[], 'seq':[]}
-with open('/home/mohammad/Database/NLP/glove.6B/glove.6B.300d.txt', 'r') as f:
-    dfile = f.readlines()
-for line in dfile[:]:
-    line = line.strip('\n').split(' ', 1)
-    word = line[0]
-    vec = np.fromstring(line[1], sep=' ')
-    seq = data_utils.preprocess.tokenize_str_batch([word])
-    try:
-        seq = seq[0].narrow(1, 2, seq[1]-3)
-    except:
-        continue
-    data_pretrain['word'].append(word)
-    data_pretrain['vec'].append(vec)
-    data_pretrain['seq'].append(seq)
-
-
-def get_batch_pretrain(data, size=128):
-    inds = np.random.choice(len(data['word']), size=size)
-    features = []
-    targets = []
-    for ind in inds:
-        if args.cuda:
-            feature = data['seq'][ind].long().cuda()
-            target = torch.tensor(data['vec'][ind], dtype=torch.float).cuda()
-        else:
-            feature = data['seq'][ind].long()
-            target = torch.tensor(data['vec'][ind], dtype=torch.float)         
-        features.append(feature)
-        targets.append(target)
-    return features, targets
-
-features_pretrn, targets_pretrn = get_batch_pretrain(data_pretrain, size=128)
-
-criterion_pre = nn.MSELoss()
-
-ntokens = args.data_size
-model_pre = model.RNNModelPreTrain(args.model, ntokens, args.emsize, 
-                                   args.nhid, args.nlayers, args.dropout, args.tied, nvec=300)
-if args.cuda:
-    model_pre.cuda()
-    
-# create optimizer and fp16 models
-if args.fp16:
-    model_pre = FP16_Module(model_pre)
-    optim_pre = eval('torch.optim.'+args.optim)(model_pre.parameters(), lr=0.0001)
-    optim_pre = FP16_Optimizer(optim_pre, 
-                           static_loss_scale=args.loss_scale,
-                           dynamic_loss_scale=args.dynamic_loss_scale)
-else:
-    optim_pre = eval('torch.optim.'+args.optim)(model_pre.parameters(), lr=0.0001)
-
-# # add linear learning rate scheduler
-# if train_data is not None:
-#     num_iters = len(train_data) * args.epochs
-#     LR = LinearLR(optim, num_iters)   
-
-# wrap model for distributed training
-if args.world_size > 1:
-    model_pre = DDP(model_pre)
+if args.exp == 'pretrain':
+    print('Pretraining...')
+    data_pretrain = {'word':[], 'vec':[], 'seq':[]}
+    with open('/home/mohammad/Database/NLP/glove.6B/glove.6B.300d.txt', 'r') as f:
+        dfile = f.readlines()
+    for line in dfile[:]:
+        line = line.strip('\n').split(' ', 1)
+        word = line[0]
+        vec = np.fromstring(line[1], sep=' ')
+        seq = data_utils.preprocess.tokenize_str_batch([word])
+        try:
+            seq = seq[0].narrow(1, 2, seq[1]-3)
+        except:
+            continue
+        data_pretrain['word'].append(word)
+        data_pretrain['vec'].append(vec)
+        data_pretrain['seq'].append(seq)
 
 
-for iter_trn in range(100):
-    # get a train batch
+    def get_batch_pretrain(data, size=128):
+        inds = np.random.choice(len(data['word']), size=size)
+        features = []
+        targets = []
+        for ind in inds:
+            if args.cuda:
+                feature = data['seq'][ind].long().cuda()
+                target = torch.tensor(data['vec'][ind], dtype=torch.float).cuda()
+            else:
+                feature = data['seq'][ind].long()
+                target = torch.tensor(data['vec'][ind], dtype=torch.float)         
+            features.append(feature)
+            targets.append(target)
+        return features, targets
+
     features_pretrn, targets_pretrn = get_batch_pretrain(data_pretrain, size=128)
-    total_loss = 0.0
-    # zero grads
-    model_pre.zero_grad()
-    optim_pre.zero_grad()
-    for feature_seq, target_vec in zip(features_pretrn, targets_pretrn):
-        # clear hidden state
-        model_pre.hidden = model_pre.init_hidden()
-        # do forward path
-        pred_vec = model_pre(feature_seq)[0][-1,-1]
-        loss = criterion_pre(pred_vec, target_vec)
-        total_loss += loss.data.float()
-        # do backward path
-        # loss.backward()
-        # optimize
-        if args.fp16:
-            optim_pre.backward(loss)
-        else:
-            loss.backward(retain_graph=True)
-    # clipping gradients helps prevent the exploding gradient problem in RNNs / LSTMs.
-    if args.clip > 0:
-        if not args.fp16:
-            torch.nn.utils.clip_grad_norm(model_pre.parameters(), args.clip)
-        else:
-            optim_pre.clip_fp32_grads(clip=args.clip)
-    optim_pre.step()
-    print('Iter {:3d}, loss {:.2E}'.format(iter_trn, total_loss))
-pdb.set_trace()
+
+    criterion_pre = nn.MSELoss()
+
+    ntokens = args.data_size
+    model_pre = model.RNNModelPreTrain(args.model, ntokens, args.emsize, 
+                                       args.nhid, args.nlayers, args.dropout, args.tied, nvec=300)
+    if args.cuda:
+        model_pre.cuda()
+
+    # create optimizer and fp16 models
+    if args.fp16:
+        model_pre = FP16_Module(model_pre)
+        optim_pre = eval('torch.optim.'+args.optim)(model_pre.parameters(), lr=0.0001)
+        optim_pre = FP16_Optimizer(optim_pre, 
+                               static_loss_scale=args.loss_scale,
+                               dynamic_loss_scale=args.dynamic_loss_scale)
+    else:
+        optim_pre = eval('torch.optim.'+args.optim)(model_pre.parameters(), lr=0.0001)
+
+    # # add linear learning rate scheduler
+    # if train_data is not None:
+    #     num_iters = len(train_data) * args.epochs
+    #     LR = LinearLR(optim, num_iters)   
+
+    # wrap model for distributed training
+    if args.world_size > 1:
+        model_pre = DDP(model_pre)
+
+
+    for iter_trn in range(10000):
+        # get a train batch
+        features_pretrn, targets_pretrn = get_batch_pretrain(data_pretrain, size=128)
+        total_loss = 0.0
+        # zero grads
+        model_pre.zero_grad()
+        optim_pre.zero_grad()
+        for feature_seq, target_vec in zip(features_pretrn, targets_pretrn):
+            # clear hidden state
+            model_pre.hidden = model_pre.init_hidden()
+            # do forward path
+            pred_vec = model_pre(feature_seq)[0][-1,-1]
+            loss = criterion_pre(pred_vec, target_vec)
+            total_loss += loss.data.float()
+            # do backward path
+            # loss.backward()
+            # optimize
+            if args.fp16:
+                optim_pre.backward(loss)
+            else:
+                loss.backward(retain_graph=True)
+        # clipping gradients helps prevent the exploding gradient problem in RNNs / LSTMs.
+        if args.clip > 0:
+            if not args.fp16:
+                torch.nn.utils.clip_grad_norm(model_pre.parameters(), args.clip)
+            else:
+                optim_pre.clip_fp32_grads(clip=args.clip)
+        optim_pre.step()
+        print('Iter {:3d}, loss {:.2E}'.format(iter_trn, total_loss))
+    #pdb.set_trace()
 
 ###############################################################################
 # Load data
@@ -249,17 +251,21 @@ if args.cuda:
 
 rnn_model = model
 
-sd = model_pre.state_dict()
-model.load_state_dict(sd)
-
-# if args.load != '':
-#     sd = torch.load(args.load)
-#     try:
-#         model.load_state_dict(sd)
-#     except:
-#         apply_weight_norm(model.rnn, hook_child=False)
-#         model.load_state_dict(sd)
-#         remove_weight_norm(model.rnn)
+if args.exp == 'pretrain':
+    sd = model_pre.state_dict()
+    model.load_state_dict(sd)
+    # free-up gpu memory
+    del model_pre
+    torch.cuda.empty_cache()
+else:
+    if args.load != '':
+        sd = torch.load(args.load)
+        try:
+            model.load_state_dict(sd)
+        except:
+            apply_weight_norm(model.rnn, hook_child=False)
+            model.load_state_dict(sd)
+            remove_weight_norm(model.rnn)
 
 if not args.no_weight_norm:
     apply_weight_norm(model.rnn, hook_child=False)
@@ -331,7 +337,10 @@ def evaluate(data_source):
             total_loss += criterion(output_flat, targets.view(-1).contiguous()).data[0]
     return total_loss / max(len(data_source), 1)
 
+iters_count = 0
+
 def train(total_iters=0):
+    global iters_count
     # Turn on training mode which enables dropout.
     model.train()
     total_loss = 0
@@ -340,6 +349,7 @@ def train(total_iters=0):
     hidden = init_hidden(args.batch_size)
     curr_loss = 0.
     for i, batch in enumerate(train_data):
+        iters_count += 1
         data, targets, reset_mask = get_batch(batch)
         output, hidden = model(data, reset_mask=reset_mask)
         loss = criterion(output.view(-1, ntokens).contiguous().float(), targets.view(-1).contiguous())
@@ -380,6 +390,9 @@ def train(total_iters=0):
                       args.loss_scale if not args.fp16 else optim.loss_scale 
                   )
             )
+            # write logs to a file
+            with open('./run_outputs/'+args.exp+'.txt', 'a+') as f:
+                f.write(str(epoch)+', '+str(iters_count)+', '+str(cur_loss.item())+'\n')
             total_loss = 0
             start_time = time.time()
             sys.stdout.flush()
