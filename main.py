@@ -51,7 +51,7 @@ parser.add_argument('--save', type=str,  default='lang_model.pt',
                     help='path to save the final model')
 parser.add_argument('--load', type=str, default='',
                     help='path to a previously saved model checkpoint')
-parser.add_argument('--save_iters', type=int, default=2000, metavar='N',
+parser.add_argument('--save_iters', type=int, default=100000, metavar='N',
                     help='save current model progress interval')
 parser.add_argument('--fp16', action='store_true',
                     help='Run model in pseudo-fp16 mode (fp16 storage fp32 math).')
@@ -244,7 +244,10 @@ train_data, val_data, test_data = data_config.apply(args)
 ###############################################################################
 
 ntokens = args.data_size
-model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.tied)
+if args.exp == 'NoEmbed':
+    model = model.RNNModelNoEmbed(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.tied)
+else:
+    model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.tied)
 print('* number of parameters: %d' % sum([p.nelement() for p in model.parameters()]))
 if args.cuda:
     model.cuda()
@@ -391,7 +394,7 @@ def train(total_iters=0):
                   )
             )
             # write logs to a file
-            with open('./run_outputs/'+args.exp+'.txt', 'a+') as f:
+            with open('./run_outputs/'+args.exp+'_'+str(args.nhid)+'x'+str(args.nlayers)+'.txt', 'a+') as f:
                 f.write(str(epoch)+', '+str(iters_count)+', '+str(cur_loss.item())+'\n')
             total_loss = 0
             start_time = time.time()

@@ -81,7 +81,10 @@ class RNNModelNoEmbed(nn.Module):
     def forward(self, input, reset_mask=None):
         #emb = self.drop(self.encoder(input))
         self.rnn.detach_hidden()
-        output, hidden = self.rnn(input, reset_mask=reset_mask)
+        #input = input.type(torch.FloatTensor).cuda()
+        emb = one_hot(input, 256).type(torch.FloatTensor).cuda()
+        #pdb.set_trace()
+        output, hidden = self.rnn(emb, reset_mask=reset_mask)
         output = self.drop(output)
         decoded = self.decoder(output.view(output.size(0)*output.size(1), output.size(2)))
         return decoded.view(output.size(0), output.size(1), decoded.size(1)), hidden
@@ -215,3 +218,12 @@ def get_valid_outs(timestep, seq_len, out, last_out):
 def selector_circuit(val0, val1, selections):
     selections = selections.type_as(val0.data).view(-1, 1).contiguous()
     return (val0*(1-selections)) + (val1*selections)
+
+def one_hot(seq_batch,depth):
+    # seq_batch.size() should be [seq,batch] or [batch,]
+    # return size() would be [seq,batch,depth] or [batch,depth]
+    out = torch.zeros(seq_batch.size()+torch.Size([depth]), dtype=torch.long).cuda()
+    dim = len(out.size()) - 1
+    #pdb.set_trace()
+    index = seq_batch.view(seq_batch.size()+torch.Size([1]))
+    return out.scatter_(dim,index,1)

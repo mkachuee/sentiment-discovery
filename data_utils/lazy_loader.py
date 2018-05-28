@@ -29,10 +29,16 @@ def make_lazy(path, strs, data_type='data'):
     datapath = os.path.join(lazypath, data_type)
     lenpath = os.path.join(lazypath, data_type+'.len.pkl')
     if not torch.distributed._initialized or torch.distributed.get_rank() == 0:
-        with open(datapath, 'w') as f:
-            f.write(''.join(strs))
-        str_ends = list(accumulate(map(len, strs)))
-        pkl.dump(str_ends, open(lenpath, 'wb'))
+        try:
+            with open(datapath, 'w') as f:
+                for str_item in strs:
+                    f.write(str_item)
+            str_ends = list(accumulate(map(len, strs)))
+            pkl.dump(str_ends, open(lenpath, 'wb'))
+        except:
+            import pdb
+            pdb.set_trace()
+            
     else:
         while not os.path.exists(lenpath):
             time.sleep(1)
