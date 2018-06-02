@@ -21,7 +21,7 @@ def exists_lazy(path, data_type='data'):
         return False
     return True
 
-def make_lazy(path, strs, data_type='data'):
+def make_lazy_org(path, strs, data_type='data'):
     """make lazy version of file"""
     lazypath = get_lazy_path(path)
     if not os.path.exists(lazypath):
@@ -42,7 +42,29 @@ def make_lazy(path, strs, data_type='data'):
     else:
         while not os.path.exists(lenpath):
             time.sleep(1)
-
+            
+def make_lazy(path, strs, data_type='data'):
+    """make lazy version of file"""
+    lazypath = get_lazy_path(path)
+    if not os.path.exists(lazypath):
+        os.makedirs(lazypath)
+    datapath = os.path.join(lazypath, data_type)
+    lenpath = os.path.join(lazypath, data_type+'.len.pkl')
+    if not torch.distributed._initialized or torch.distributed.get_rank() == 0:
+        with open(datapath, 'w') as f:
+            str_ends = []
+            str_cnt = 0
+            for s in strs:
+                f.write(s)
+                str_cnt += len(s)
+                str_ends.append(str_cnt)
+        pkl.dump(str_ends, open(lenpath, 'wb'))
+    else:
+        while not os.path.exists(lenpath):
+            time.sleep(1)
+            
+            
+            
 def split_strings(strings, start, chr_lens):
     """split strings based on string lengths and given start"""
     return [strings[i-start:j-start] for i, j in zip([start]+chr_lens[:-1], chr_lens)]
