@@ -5,6 +5,7 @@ import math
 import collections
 import pickle as pkl
 import pdb
+import copy
 
 import torch
 import torch.nn as nn
@@ -75,9 +76,11 @@ print('Running:', exp_name)
 if exp_dataset == 'sst':
     data_parser.set_defaults(split='1.', data='data/binary_sst/train.csv')
     data_parser.set_defaults(valid='data/binary_sst/val.csv', test='data/binary_sst/test.csv')
-elif exp_dataset == 'imdb':
+elif exp_dataset == 'imdb' or exp_dataset == 'trans':
     data_parser.set_defaults(split='1.', data='data/imdb/train.json')
     data_parser.set_defaults(valid='data/imdb/test.json', test='data/imdb/test.json')    
+else:
+    raise NotImplementedError
 
 args = parser.parse_args()
 
@@ -92,6 +95,14 @@ if args.seed is not -1:
         torch.cuda.manual_seed(args.seed)
 
 train_data, val_data, test_data = data_config.apply(args)
+
+if exp_dataset == 'trans':
+    data_parser.set_defaults(split='1.', data='data/binary_sst/train.csv')
+    data_parser.set_defaults(valid='data/binary_sst/val.csv', test='data/binary_sst/test.csv')
+    args = parser.parse_args()
+    _, val_data, test_data = data_config.apply(args)
+
+
 ntokens = args.data_size
 model = RNNFeaturizerHist(args.model, ntokens, args.emsize, args.nhid, args.nlayers, 0.0, args.all_layers)
 if args.cuda:
